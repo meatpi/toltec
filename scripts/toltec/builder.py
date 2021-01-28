@@ -410,6 +410,7 @@ recipe '{recipe.name}'"
                 ),
                 bash.put_variables(
                     {
+                        **package.parent.parent.variables,
                         **package.parent.variables,
                         **package.variables,
                         **package.custom_variables,

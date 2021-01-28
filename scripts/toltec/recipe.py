@@ -38,12 +38,13 @@ class GenericRecipe:
 
     name: str
     path: str
+
+    variables: bash.Variables
     archs: bash.IndexedArray
     timestamp: datetime
     sources: List[Source]
-    recipes: Dict[str, "Recipe"]
 
-    variables: bash.Variables
+    recipes: Dict[str, "Recipe"]
 
     @staticmethod
     def from_file(path: str) -> "GenericRecipe":
@@ -192,13 +193,14 @@ class Recipe:  # pylint:disable=too-many-instance-attributes
 
     parent: GenericRecipe
     name: str
+
+    variables: bash.Variables
+    custom_variables: bash.Variables
     maintainer: str
     image: str
     arch: str
     flags: bash.IndexedArray
 
-    variables: bash.Variables
-    custom_variables: bash.Variables
     functions: bash.Functions
     custom_functions: bash.Functions
 
@@ -294,6 +296,7 @@ which has a build() step"
                 pkg_def = functions.pop(sub_pkg_name)
                 context = bash.put_variables(
                     {
+                        **self.parent.variables,
                         **self.variables,
                         **variables,
                         "pkgname": sub_pkg_name,
@@ -303,7 +306,9 @@ which has a build() step"
                     context + pkg_def
                 )
 
-                for var_name in self.variables:
+                # Parent variables are only included above for correct
+                # variable substitution but must not propagate down
+                for var_name in list(self.parent.variables) + list(self.variables):
                     del pkg_decls[sub_pkg_name][0][var_name]
 
             for sub_pkg_name, (pkg_vars, pkg_funcs) in pkg_decls.items():
@@ -316,6 +321,9 @@ class Package:  # pylint:disable=too-many-instance-attributes
 
     parent: Recipe
     name: str
+
+    variables: bash.Variables
+    custom_variables: bash.Variables
     version: Version
     desc: str
     url: str
@@ -324,8 +332,6 @@ class Package:  # pylint:disable=too-many-instance-attributes
     depends: bash.IndexedArray
     conflicts: bash.IndexedArray
 
-    variables: bash.Variables
-    custom_variables: bash.Variables
     functions: bash.Functions
     custom_functions: bash.Functions
 
