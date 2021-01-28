@@ -3,7 +3,16 @@
 """Build recipes and create packages."""
 
 import shutil
-from typing import Any, Deque, Iterable, MutableMapping, Optional, Tuple
+from typing import (
+    Any,
+    Dict,
+    Deque,
+    Iterable,
+    List,
+    MutableMapping,
+    Optional,
+    Tuple,
+)
 from collections import deque
 import re
 import os
@@ -12,7 +21,7 @@ import textwrap
 import docker
 import requests
 from . import bash, util, ipk, paths
-from .recipe import Recipe, Package
+from .recipe import GenericRecipe, Recipe, Package
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +36,53 @@ class BuildContextAdapter(logging.LoggerAdapter):
     def process(
         self, msg: str, kwargs: MutableMapping[str, Any]
     ) -> Tuple[str, MutableMapping[str, Any]]:
-        if "recipe" in self.extra:
-            if "package" in self.extra:
-                return (
-                    "%s (%s): %s"
-                    % (self.extra["package"], self.extra["recipe"], msg),
-                    kwargs,
-                )
+        prefix = ""
 
-            return "%s: %s" % (self.extra["recipe"], msg), kwargs
+        if "recipe" in self.extra:
+            prefix += self.extra["recipe"]
+
+        if "arch" in self.extra:
+            prefix += f" [{self.extra['arch']}]"
+
+        if "package" in self.extra:
+            prefix += f" ({self.extra['package']})"
+
+        if prefix:
+            return f"{prefix}: {msg}", kwargs
 
         return msg, kwargs
+
+
+def check_directory(path: str, message: str) -> bool:
+    """
+    Create a directory and ask the user what to do if it already exists.
+
+    :param path: path to the directory to create
+    :param message: message to display before asking the user interactively
+    :returns: false if the user chose to cancel the current operation
+    """
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        ans = util.query_user(
+            message,
+            default="c",
+            options=["c", "r", "k"],
+            aliases={
+                "cancel": "c",
+                "remove": "r",
+                "keep": "k",
+            },
+        )
+
+        if ans == "c":
+            return False
+
+        if ans == "r":
+            shutil.rmtree(path)
+            os.mkdir(path)
+
+    return True
 
 
 class Builder:  # pylint: disable=too-few-public-methods
@@ -52,13 +97,24 @@ class Builder:  # pylint: disable=too-few-public-methods
     # Toltec Docker image used for generic tasks
     DEFAULT_IMAGE = "base:v1.2.2"
 
-    def __init__(self) -> None:
-        """Create a builder helper."""
-        os.makedirs(paths.WORK_DIR, exist_ok=True)
-        os.makedirs(paths.REPO_DIR, exist_ok=True)
+    def __init__(self, work_dir: str, repo_dir: str) -> None:
+        """
+        Create a builder helper.
+
+        :param work_dir: directory where packages are built
+        :param repo_dir: directory where built packages are stored
+        """
+        self.work_dir = work_dir
+        os.makedirs(work_dir, exist_ok=True)
+
+        self.repo_dir = repo_dir
+        os.makedirs(repo_dir, exist_ok=True)
 
         self.install_lib = ""
         install_lib_path = os.path.join(paths.SCRIPTS_DIR, "install-lib")
+
+        self.context: Dict[str, str] = {}
+        self.adapter = BuildContextAdapter(logger, self.context)
 
         with open(install_lib_path, "r") as file:
             for line in file:
@@ -75,98 +131,67 @@ permissions."
             ) from err
 
     def make(
-        self, recipe_name: str, packages_names: Optional[Iterable[str]] = None
+        self,
+        generic_recipe: GenericRecipe,
+        arch_packages_names: Optional[Dict[str, List[str]]] = None,
     ) -> bool:
         """
-        Build a recipe and create its associated packages.
+        Build packages defined by a recipe.
 
-        :param recipe_name: name of the recipe to make
-        :param packages_names: list of packages names of the recipe to make
-            (default: all of them)
-        :returns: true if all packages were built correctly
+        :param generic_recipe: recipe to make
+        :param arch_packages_names: set of packages to build for each
+            architecture (default: all supported architectures
+            and all declared packages)
+        :returns: true if all the requested packages were built correctly
         """
-        recipe_dir = os.path.join(paths.RECIPE_DIR, recipe_name)
-        build_dir = os.path.join(paths.WORK_DIR, recipe_name)
-        recipe = Recipe.from_file(recipe_dir)
+        self.context["recipe"] = generic_recipe.name
+        build_dir = os.path.join(self.work_dir, generic_recipe.name)
 
-        context = {"recipe": recipe.name}
-        adapter = BuildContextAdapter(logger, context)
-
-        try:
-            os.mkdir(build_dir)
-        except FileExistsError:
-            build_dir_rel = os.path.relpath(build_dir)
-            ans = util.query_user(
-                f"The build directory '{build_dir_rel}' for recipe \
-'{recipe.name}' already exists.\nWould you like to [c]ancel, [r]emove that \
-directory, or [k]eep it (not recommended)?",
-                default="c",
-                options=["c", "r", "k"],
-                aliases={
-                    "cancel": "c",
-                    "remove": "r",
-                    "keep": "k",
-                },
-            )
-
-            if ans == "c":
-                return False
-
-            if ans == "r":
-                shutil.rmtree(build_dir)
-                os.mkdir(build_dir)
+        if not check_directory(
+            build_dir,
+            f"The build directory '{os.path.relpath(build_dir)}' for recipe \
+'{generic_recipe.name}' already exists.\nWould you like to [c]ancel, [r]emove \
+that directory, or [k]eep it (not recommended)?",
+        ):
+            return False
 
         src_dir = os.path.join(build_dir, "src")
         os.makedirs(src_dir, exist_ok=True)
+        self._fetch_sources(generic_recipe, src_dir)
 
-        base_pkg_dir = os.path.join(build_dir, "pkg")
-        os.makedirs(base_pkg_dir, exist_ok=True)
+        return all(
+            self._make_arch(
+                generic_recipe.recipes[arch or ""],
+                src_dir,
+                os.path.join(build_dir, arch or ""),
+                arch_packages_names[arch or ""]
+                if arch_packages_names is not None
+                else None,
+            )
+            for arch in (
+                arch_packages_names.keys()
+                if arch_packages_names is not None
+                else generic_recipe.archs
+            )
+        )
 
-        self._fetch_source(adapter, recipe, recipe_dir, src_dir)
-        self._prepare(adapter, recipe, src_dir)
-        self._build(adapter, recipe, src_dir)
-        self._strip(adapter, recipe, src_dir)
-
-        for package_name in (
-            packages_names
-            if packages_names is not None
-            else recipe.packages.keys()
-        ):
-            if package_name not in recipe.packages:
-                raise BuildError(
-                    f"Package '{package_name}' does not exist in \
-recipe '{recipe.name}'"
-                )
-
-            assert package_name is not None
-            package = recipe.packages[package_name]
-            context["package"] = package_name
-
-            pkg_dir = os.path.join(base_pkg_dir, package_name)
-            os.makedirs(pkg_dir, exist_ok=True)
-
-            self._package(adapter, package, src_dir, pkg_dir)
-            self._archive(adapter, package, pkg_dir)
-
-        return True
-
-    def _fetch_source(
+    def _fetch_sources(
         self,
-        adapter: BuildContextAdapter,
-        recipe: Recipe,
-        recipe_dir: str,
+        generic_recipe: GenericRecipe,
         src_dir: str,
     ) -> None:
         """Fetch and extract all source files required to build a recipe."""
-        adapter.info("Fetching source files")
+        self.adapter.info("Fetching source files")
 
-        for source in recipe.sources:
+        for source in generic_recipe.sources:
             filename = os.path.basename(source.url)
             local_path = os.path.join(src_dir, filename)
 
             if self.URL_REGEX.match(source.url) is None:
                 # Get source file from the recipe’s directory
-                shutil.copy2(os.path.join(recipe_dir, source.url), local_path)
+                shutil.copy2(
+                    os.path.join(generic_recipe.path, source.url), local_path
+                )
             else:
                 # Fetch source file from the network
                 req = requests.get(source.url)
@@ -194,17 +219,59 @@ source file '{source.url}', got {req.status_code}"
             if not source.noextract:
                 util.auto_extract(local_path, src_dir)
 
-    def _prepare(
-        self, adapter: BuildContextAdapter, recipe: Recipe, src_dir: str
-    ) -> None:
+    def _make_arch(
+        self,
+        recipe: Recipe,
+        generic_src_dir: str,
+        build_dir: str,
+        packages_names: Optional[Iterable[str]] = None,
+    ) -> bool:
+        self.context["arch"] = recipe.arch
+
+        src_dir = os.path.join(build_dir, "src")
+        shutil.copytree(generic_src_dir, src_dir)
+        self._prepare(recipe, src_dir)
+
+        base_pkg_dir = os.path.join(build_dir, "pkg")
+        os.makedirs(base_pkg_dir, exist_ok=True)
+
+        self._build(recipe, src_dir)
+        self._strip(recipe, src_dir)
+
+        for package_name in (
+            packages_names
+            if packages_names is not None
+            else recipe.packages.keys()
+        ):
+            if package_name not in recipe.packages:
+                raise BuildError(
+                    f"Package '{package_name}' does not exist in \
+recipe '{recipe.name}'"
+                )
+
+            assert package_name is not None
+            package = recipe.packages[package_name]
+            self.context["package"] = package_name
+
+            pkg_dir = os.path.join(base_pkg_dir, package_name)
+            os.makedirs(pkg_dir, exist_ok=True)
+
+            self._package(package, src_dir, pkg_dir)
+            self._archive(package, pkg_dir)
+            del self.context["package"]
+
+        del self.context["arch"]
+        return True
+
+    def _prepare(self, recipe: Recipe, src_dir: str) -> None:
         """Prepare source files before building."""
         script = recipe.functions["prepare"]
 
         if not script:
-            adapter.info("Skipping prepare (nothing to do)")
+            self.adapter.debug("Skipping prepare (nothing to do)")
             return
 
-        adapter.info("Preparing source files")
+        self.adapter.info("Preparing source files")
         logs = bash.run_script(
             script=script,
             variables={
@@ -214,22 +281,20 @@ source file '{source.url}', got {req.status_code}"
             },
         )
 
-        self._print_logs(logs, adapter, "prepare()")
+        self._print_logs(logs, "prepare()")
 
-    def _build(
-        self, adapter: BuildContextAdapter, recipe: Recipe, src_dir: str
-    ) -> None:
+    def _build(self, recipe: Recipe, src_dir: str) -> None:
         """Build artifacts for a recipe."""
         script = recipe.functions["build"]
 
         if not script:
-            adapter.info("Skipping build (nothing to do)")
+            self.adapter.debug("Skipping build (nothing to do)")
             return
 
-        adapter.info("Building artifacts")
+        self.adapter.info("Building artifacts")
 
         # Set fixed atime and mtime for all the source files
-        epoch = int(recipe.timestamp.timestamp())
+        epoch = int(recipe.parent.timestamp.timestamp())
 
         for filename in util.list_tree(src_dir):
             os.utime(filename, (epoch, epoch))
@@ -261,17 +326,15 @@ source file '{source.url}', got {req.status_code}"
             ),
         )
 
-        self._print_logs(logs, adapter, "build()")
+        self._print_logs(logs, "build()")
 
-    def _strip(
-        self, adapter: BuildContextAdapter, recipe: Recipe, src_dir: str
-    ) -> None:
+    def _strip(self, recipe: Recipe, src_dir: str) -> None:
         """Strip all debugging symbols from binaries."""
         if "nostrip" in recipe.flags:
-            adapter.info("Not stripping binaries (nostrip flag set)")
+            self.adapter.debug("Not stripping binaries (nostrip flag set)")
             return
 
-        adapter.info("Stripping binaries")
+        self.adapter.info("Stripping binaries")
         mount_src = "/src"
 
         logs = bash.run_script_in_container(
@@ -297,17 +360,11 @@ source file '{source.url}', got {req.status_code}"
             ),
         )
 
-        self._print_logs(logs, adapter)
+        self._print_logs(logs)
 
-    def _package(
-        self,
-        adapter: BuildContextAdapter,
-        package: Package,
-        src_dir: str,
-        pkg_dir: str,
-    ) -> None:
+    def _package(self, package: Package, src_dir: str, pkg_dir: str) -> None:
         """Make a package from a recipe’s build artifacts."""
-        adapter.info("Packaging build artifacts")
+        self.adapter.info("Packaging build artifacts")
         logs = bash.run_script(
             script=package.functions["package"],
             variables={
@@ -318,23 +375,20 @@ source file '{source.url}', got {req.status_code}"
             },
         )
 
-        self._print_logs(logs, adapter, "package()")
-
-        adapter.debug("Resulting tree:")
+        self._print_logs(logs, "package()")
+        self.adapter.debug("Resulting tree:")
 
         for filename in util.list_tree(pkg_dir):
-            adapter.debug(
+            self.adapter.debug(
                 " - %s",
                 os.path.normpath(
                     os.path.join("/", os.path.relpath(filename, pkg_dir))
                 ),
             )
 
-    def _archive(
-        self, adapter: BuildContextAdapter, package: Package, pkg_dir: str
-    ) -> None:
+    def _archive(self, package: Package, pkg_dir: str) -> None:
         """Create an archive for a package."""
-        adapter.info("Creating archive")
+        self.adapter.info("Creating archive")
         ar_path = os.path.join(paths.REPO_DIR, package.filename())
 
         # Inject Oxide-specific hook for reloading apps
@@ -421,15 +475,15 @@ source file '{source.url}', got {req.status_code}"
 
                 scripts[step + "rm"] = script
 
-        adapter.debug("Install scripts:")
+        self.adapter.debug("Install scripts:")
 
         if scripts:
             for script in sorted(scripts):
-                adapter.debug(" - %s", script)
+                self.adapter.debug(" - %s", script)
         else:
-            adapter.debug("(none)")
+            self.adapter.debug("(none)")
 
-        epoch = int(package.parent.timestamp.timestamp())
+        epoch = int(package.parent.parent.timestamp.timestamp())
 
         with open(ar_path, "wb") as file:
             ipk.make_ipk(
@@ -443,10 +497,9 @@ source file '{source.url}', got {req.status_code}"
         # Set fixed atime and mtime for the resulting archive
         os.utime(ar_path, (epoch, epoch))
 
-    @staticmethod
     def _print_logs(
+        self,
         logs: bash.LogGenerator,
-        adapter: BuildContextAdapter,
         function_name: str = None,
         max_lines_on_fail: int = 50,
     ) -> None:
@@ -463,22 +516,22 @@ source file '{source.url}', got {req.status_code}"
         log_buffer: Deque[str] = deque()
         try:
             for line in logs:
-                if adapter.getEffectiveLevel() <= logging.DEBUG:
-                    adapter.debug(line)
+                if self.adapter.getEffectiveLevel() <= logging.DEBUG:
+                    self.adapter.debug(line)
                 else:
                     if len(log_buffer) == max_lines_on_fail:
                         log_buffer.popleft()
                     log_buffer.append(line)
         except bash.ScriptError as err:
             if len(log_buffer) > 0:
-                adapter.info(
+                self.adapter.info(
                     f"Only showing up to {max_lines_on_fail} lines of context. "
                     + "Use --verbose for the full output."
                 )
                 for line in log_buffer:
-                    adapter.error(line)
+                    self.adapter.error(line)
 
             if function_name:
-                adapter.error(f"{function_name} failed")
+                self.adapter.error(f"{function_name} failed")
 
             raise err

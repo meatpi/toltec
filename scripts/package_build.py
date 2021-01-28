@@ -5,9 +5,12 @@
 
 import argparse
 import logging
+import os
 import sys
+from toltec import paths
 from toltec.builder import Builder
 from toltec.util import argparse_add_verbose, LOGGING_FORMAT
+from toltec.recipe import GenericRecipe
 
 parser = argparse.ArgumentParser(description=__doc__)
 
@@ -15,6 +18,14 @@ parser.add_argument(
     "recipe_name",
     metavar="RECIPENAME",
     help="name of the recipe to build",
+)
+
+parser.add_argument(
+    "-a",
+    "--arch-name",
+    nargs="*",
+    metavar="ARCHNAME",
+    help="restrict to a subset of available architectures",
 )
 
 parser.add_argument(
@@ -28,9 +39,18 @@ argparse_add_verbose(parser)
 
 args = parser.parse_args()
 logging.basicConfig(format=LOGGING_FORMAT, level=args.verbose)
-builder = Builder()
+builder = Builder(paths.WORK_DIR, paths.REPO_DIR)
 
-if not builder.make(
-    args.recipe_name, args.packages_names if args.packages_names else None
-):
+recipe = GenericRecipe.from_file(
+    os.path.join(paths.RECIPE_DIR, args.recipe_name)
+)
+arch_packages_names = None  # pylint:disable=invalid-name
+
+if args.arch_name:
+    arch_packages_names = dict(
+        (arch, args.packages_names if args.packages_names else None)
+        for arch in args.arch_name
+    )
+
+if not builder.make(recipe, arch_packages_names):
     sys.exit(1)
