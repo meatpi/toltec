@@ -23,9 +23,10 @@ parser.add_argument(
 parser.add_argument(
     "-a",
     "--arch-name",
-    nargs="*",
     metavar="ARCHNAME",
-    help="restrict to a subset of available architectures",
+    action="append",
+    help="""only build for the given architecture (can
+    be repeated)""",
 )
 
 parser.add_argument(
@@ -46,10 +47,11 @@ recipe = GenericRecipe.from_file(
 )
 arch_packages_names = None  # pylint:disable=invalid-name
 
-if args.arch_name:
+if args.arch_name or args.packages_names:
     arch_packages_names = dict(
         (arch, args.packages_names if args.packages_names else None)
-        for arch in args.arch_name
+        for arch in args.arch_name or recipe.archs
+        if arch in recipe.archs
     )
 
 if not builder.make(recipe, arch_packages_names):
