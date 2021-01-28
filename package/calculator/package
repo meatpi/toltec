@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(calculator)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="Touch-based calculator"
 url=https://github.com/reHackable/Calculator
 pkgver=0.0.0-13

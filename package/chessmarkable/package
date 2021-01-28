@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(chessmarkable)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="Chess game"
 url=https://github.com/LinusCDE/chessmarkable
 pkgver=0.6.0-3

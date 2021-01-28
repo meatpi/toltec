@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(vnsee)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="VNC client allowing you to use the device as a second screen"
 url=https://github.com/matteodelabre/vnsee
 pkgver=0.3.0-3

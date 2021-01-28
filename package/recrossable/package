@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(recrossable)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="Solve crossword puzzles"
 url=https://github.com/sandsmark/recrossable
 pkgver=0.0.0-3

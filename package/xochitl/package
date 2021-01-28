@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(xochitl)
+archs=(all)
 pkgdesc="Read documents and take notes"
 url=https://remarkable.com
 pkgver=0.0.0-3

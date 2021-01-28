@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(whiteboard-hypercard)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="Real-time collaboration, drawing or whiteboarding"
 url=https://github.com/fenollp/reMarkable-tools
 pkgver=0.3.0-2

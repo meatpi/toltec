@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(appmarkable)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="Front-end for apps that do not have a graphical user interface"
 url="https://github.com/LinusCDE/appmarkable"
 pkgver=0.0.0-8

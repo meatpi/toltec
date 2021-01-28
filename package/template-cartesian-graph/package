@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(template-cartesian-graph)
+archs=(all)
 pkgdesc="Cartesian graph template"
 url=https://github.com/PeterGrace/template-cartesian-graph
 pkgver=1.0.0-4

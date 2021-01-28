@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(genie harmony mines nao remux simple)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 timestamp=2021-01-12T14:03-08:00
 maintainer="raisjn <of.raisjn@gmail.com>"
 license=MIT

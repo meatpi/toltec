@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(rm2-suspend-fix)
+archs=(rm2)
 pkgdesc="Fix issue where suspend breaks networking on the reMarkable 2"
 url=https://toltec-dev.org/
 pkgver=0.0.0-2

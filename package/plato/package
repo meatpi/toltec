@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 pkgnames=(plato)
+archs=(rm1 rm2)
+depends_rm2=(rm2fb)
 pkgdesc="Document reader"
 url=https://github.com/LinusCDE/plato
 pkgver=0.9.13-1
