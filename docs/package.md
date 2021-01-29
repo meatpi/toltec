@@ -2,29 +2,187 @@
 
 A **recipe** is a Bash script containing the metadata and instructions needed to build a set of related packages from source.
 These recipes are used by the packaging script to generate [installable package archives for the Opkg package manager](opkg.md).
+Sourcing a recipe must have no side effects: all commands which can affect the system’s state must be confined inside functions.
 
 > **Note:** Recipes should not be marked as executable because they are not meant to be executed directly but rather meant to be parsed by the packaging script.
 
-Sourcing a recipe must have no side effects: the metadata section can only execute commands that do not modify the system state, and stateful commands must be confined inside functions.
+At the top of the file is a block of fields that define metadata about the package.
+You can also declare custom variables to reduce repetition, but make sure to prefix their name with `_`.
+A block of functions follows that are run at various steps in the process of building the packages.
+
+> **Note:** The metadata fields and functions are inspired both by the [Debian control file format](https://www.debian.org/doc/debian-policy/ch-controlfields.html) and the [Arch Linux PKGBUILD format](https://wiki.archlinux.org/index.php/PKGBUILD).
 
 ### Contents
 
-1. [Metadata section](#metadata-section)
-2. [Prepare section](#prepare-section)
-3. [Build section](#build-section)
-4. [Package section](#package-section)
-5. [Install section](#install-section)
-6. [Split packages](#split-packages)
+1. [Source Section](#source-section)
+2. [Build Section](#build-section)
+3. [Package Section](#package-section)
+4. [Install Section](#install-section)
 
-### Metadata Section
+### Source Section
 
-At the top of the file is a block of fields that define metadata about the package.
-For consistency, declare those fields in the same order they are described below.
-You can also declare custom variables to reduce repetition, but make sure to prefix their name with `_`.
+This initial section tells the packaging script where the source files (or pre-compiled binaries) can be fetched from and which devices the packages produced by this recipe are compatible with.
 
-> **Note:** The field names and semantics are inspired both by the [Debian control file format](https://www.debian.org/doc/debian-policy/ch-controlfields.html) and the [Arch Linux PKGBUILD format](https://wiki.archlinux.org/index.php/PKGBUILD).
+#### `source` field
 
-#### `pkgnames`
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>No, defaults to <code>()</code></th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>Array of strings</td>
+    </tr>
+</table>
+
+The list of sources files and archives needed to build the recipe.
+The [`build()`](#build-function) and [`package()`](#package-function) functions can access the files referenced in this array from the `$srcdir` directory.
+Each entry can either be a local path relative to the recipe file or a full URL that will be fetched from the Internet (using protocols like `http://`, `https://` or `ftp://`) when building the package.
+Archive files whose names end in `.zip`, `.tar.gz`, `.tar.xz`, or `.tar.bz` will be automatically extracted in place, with all container directories stripped.
+You can disable this behavior by adding the archive name to the `noextract` array.
+
+#### `noextract` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>No, defaults to <code>()</code></th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>Array of strings</td>
+    </tr>
+</table>
+
+List of archive names which should not be automatically extracted by the build script.
+You can provide a custom extraction logic in the [`prepare()` function](#prepare-function).
+Note that this list should only contain file names, not full paths, in contrast to the `source` array.
+
+#### `sha256sums` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>No, defaults to <code>()</code></th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>Array of SHA-256 sums (strings)</td>
+    </tr>
+</table>
+
+List of SHA-256 checksums for the source files.
+After copying or downloading a source file to the `$srcdir` directory, the build script will verify its integrity by comparing its checksum with the one registered here.
+You can request to skip this verification by entering `SKIP` instead of a valid SHA-256 checksum (discouraged for files fetched from remote computers).
+This array must have exactly as many elements as the `source` array.
+
+#### `timestamp` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>Yes</th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>ISO-8601 timestamp (string)</td>
+    </tr>
+</table>
+
+The ISO-8601-formatted date of publication of the packaged upstream release.
+Note that increasing the package revision number does not require updating the `timestamp`, as it should only reflect the last modification of the source code.
+
+#### `archs` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>No, defaults to <code>(armv7-3.2)</code></th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>Array of strings</td>
+    </tr>
+</table>
+
+The list of architectures for which this package can be built.
+The following architectures are available:
+
+Name        | Meaning
+------------|-------------------------------------------------------------------------
+`all`       | Packages containing no binaries, only static resources.
+`armv7-3.2` | Packages containing binaries that can work on any reMarkable device.
+`rm1`       | Packages requiring reMarkable 1-specific resources or compilation flags.
+`rm2`       | Packages requiring reMarkable 2-specific resources or compilation flags.
+
+For example, use `archs=(rm1)` for a package that only works on reMarkable 1, or `archs=(rm1 rm2)` for a package that works both on reMarkable 1 and reMarkable 2 but needs different dependencies or compilation flags for each of those.
+
+In the following sections, you can add a suffix to any field to specify that its value only applies to a given architecture.
+For string fields, the arch-specific value will replace the unsuffixed value; for array fields, it will be appended to the unsuffixed value.
+For example, use `depends_rm2=(a b c)` to add reMarkable 2-specific dependencies.
+
+#### `prepare()` function
+
+The `prepare()` function is run after all the source files have been fetched an extracted, but before any build command is issued.
+It has access to all the metadata fields declared above.
+Common tasks include patching sources, extracting archives, and moving downloaded sources to the right location.
+
+### Build Section
+
+This section specifies information about how the source files need to be built and metadata that applies to the whole recipe (instead of specific packages produced by the recipe).
+
+#### `maintainer` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>Yes</th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>String</td>
+    </tr>
+</table>
+
+The package maintainer’s name and current email address in RFC822 format (e.g., `John Doe <doe@example.org>`).
+The maintainer is the person in charge of reviewing any pull request regarding the recipe.
+This field may be equal to `None <none@example.org>` if a package is orphaned or when proposing a new recipe.
+
+#### `image` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>No, defaults to none</th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>String</td>
+    </tr>
+</table>
+
+The Docker image and version to use for building the package.
+See [the toolchain repo](https://github.com/toltec-dev/toolchain) for a list of available images.
+It must be specified if and only if you declare a [`build()` function](#build-function).
+
+#### `flags` field
+
+<table>
+    <tr>
+        <th>Required?</th>
+        <td>No, defaults to <code>()</code></th>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>Array of strings</td>
+    </tr>
+</table>
+
+Set of flags that affect the build process.
+Currently, the only available flag is `nostrip`, which disables the automatic removal of unneeded symbols from binaries.
+
+#### `pkgnames` field
 
 <table>
     <tr>
@@ -37,12 +195,26 @@ You can also declare custom variables to reduce repetition, but make sure to pre
     </tr>
 </table>
 
-The names of the packages that can be built using this recipe.
-Unless you’re creating a [split package](#split-packages), this array should only contain one entry.
+The names of the packages will be generated from this recipe’s build artifacts.
+Unless you’re creating a split package, this array should only contain one entry.
 Must only contain ASCII lowercase letters, digits, and dashes.
 Should match the upstream name as closely as possible.
 
-#### `pkgdesc`
+#### `build()` function
+
+The `build()` function runs in the context of a Docker container with the chosen `image`.
+This function has access to all the metadata variables declared above, plus the `$arch` variable which contains the name of the architecture the recipe is currently being built for.
+The working directory is `$srcdir`, which is populated with all the sources declared in `sources`.
+
+### Package Section
+
+This section contains metadata specific to each package generated by the recipe and functions used to generate those packages from the build artifacts created above.
+If the `pkgnames` array contains a single value, you can simply declare those fields and functions at the same level as the ones above.
+Otherwise, if you’re making a so-called _split package_, you’ll need to wrap package-specific fields and metadata into Bash functions named after each package.
+The `$pkgname` (singular) variable is available and contains the name of the current package.
+Fields defined outside of any function at the top of the recipe will be shared with all generated packages.
+
+#### `pkgdesc` field
 
 <table>
     <tr>
@@ -60,7 +232,7 @@ It should help a potential user decide whether the packaged application can be u
 Must start with a name (e.g., “Scientific calculator” instead of “A scientific calculator”).
 Do not explicitly mention that the package is for the reMarkable since it would be redundant (e.g., avoid “Scientific calculator ~~for the reMarkable~~”).
 
-#### `url`
+#### `url` field
 
 <table>
     <tr>
@@ -75,7 +247,7 @@ Do not explicitly mention that the package is for the reMarkable since it would 
 
 A link to the project home page, where users may find sources and documentation.
 
-#### `pkgver`
+#### `pkgver` field
 
 <table>
     <tr>
@@ -98,23 +270,7 @@ The [deb-version rules](https://manpages.debian.org/wheezy/dpkg-dev/deb-version.
     - Use the version number `0.0.0` if upstream has no versioning scheme, and then only use the package revision number for increasing the version number.
     - Use the `~beta` suffix for beta versions. `~` has a special meaning in Debian version numbers that makes it sort lower than any other character, even the empty string.
 
-#### `timestamp`
-
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>Yes</th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>ISO-8601 timestamp (string)</td>
-    </tr>
-</table>
-
-The ISO-8601-formatted date of publication of the packaged upstream release.
-Note that increasing the package revision number does not require updating the `timestamp`, as it should only reflect the last modification of the source code.
-
-#### `section`
+#### `section` field
 
 <table>
     <tr>
@@ -144,24 +300,7 @@ utils           | System tools and various apps.
 
 If the package does not fit into one of the existing sections, you are free to create a new one and document it here.
 
-#### `maintainer`
-
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>Yes</th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>String</td>
-    </tr>
-</table>
-
-The package maintainer’s name and current email address in RFC822 format (e.g., `John Doe <doe@example.org>`).
-The maintainer is the person in charge of reviewing any pull request regarding the package.
-This field may be equal to `None <none@example.org>` if a package is orphaned or when proposing a new package.
-
-#### `license`
+#### `license` field
 
 <table>
     <tr>
@@ -177,7 +316,7 @@ This field may be equal to `None <none@example.org>` if a package is orphaned or
 [SPDX identifier](https://spdx.org/licenses/) of the license under which the upstream allows distributing the package.
 Note that this may be different from the license of the recipe itself, which is always MIT.
 
-#### `depends`
+#### `depends` field
 
 <table>
     <tr>
@@ -194,7 +333,7 @@ A list of package names that must be installed on the device before this package
 
 See <https://www.debian.org/doc/debian-policy/ch-relationships.html#binary-dependencies-depends-recommends-suggests-enhances-pre-depends>.
 
-#### `conflicts`
+#### `conflicts` field
 
 <table>
     <tr>
@@ -211,121 +350,19 @@ A list of package names that must **NOT** be unpacked at the same time as this p
 
 See <https://www.debian.org/doc/debian-policy/ch-relationships.html#conflicting-binary-packages-conflicts>.
 
-#### `image`
+#### `package()` function
 
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>No, defaults to none</th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>String</td>
-    </tr>
-</table>
-
-The Docker image to use for building the package.
-It must be omitted for packages that do not require a build step (see [below](#build-section)).
-Conversely, you must not define a `build()` function if you omit this field.
-
-#### `source`
-
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>No, defaults to <code>()</code></th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>Array of strings</td>
-    </tr>
-</table>
-
-The list of sources files and archives needed to build the package.
-The [`build()`](#build-section) and [`package()`](#package-section) sections can access the files referenced in this array from the `$srcdir` directory.
-Each entry can either be a local path relative to the recipe file or a full URL that will be fetched from the Internet (any protocol supported by [curl](https://curl.haxx.se/) can be used here) when building the package.
-Archive files whose names end in `.zip`, `.tar.gz`, `.tar.xz`, or `.tar.bz` will be automatically extracted in place, with all container directories stripped.
-You can disable this behavior by adding the archive name to the `noextract` array.
-
-#### `flags`
-
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>No, defaults to <code>()</code></th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>Array of strings</td>
-    </tr>
-</table>
-
-Set of flags that affect the build process.
-Currently, the only available flag is `nostrip`, which disables the automatic removal of unneeded symbols from binaries.
-
-#### `noextract`
-
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>No, defaults to <code>()</code></th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>Array of strings</td>
-    </tr>
-</table>
-
-List of archive names which should not be automatically extracted by the build script.
-You can provide a custom extraction logic in the [`prepare()` section](#prepare-section).
-Note that this list should only contain file names, not full paths, in contrast to the `source` array.
-
-#### `sha256sums`
-
-<table>
-    <tr>
-        <th>Required?</th>
-        <td>No, defaults to <code>()</code></th>
-    </tr>
-    <tr>
-        <th>Type</th>
-        <td>Array of SHA-256 sums (strings)</td>
-    </tr>
-</table>
-
-List of SHA-256 checksums for the source files.
-After copying or downloading a source file to the `$srcdir` directory, the build script will verify its integrity by comparing its checksum with the one registered here.
-You can request to skip this verification by entering `SKIP` instead of a valid SHA-256 checksum (discouraged for files fetched from remote computers).
-This array must have exactly as many elements as the `source` array.
-
-### Prepare Section
-
-The prepare section contains the `prepare()` function in which the source files may be prepared for the building step that follows.
-This function has access to all the metadata fields declared above.
-Common tasks include patching sources, extracting archives, and moving downloaded sources to the right location.
-
-### Build Section
-
-The build section is made up of a function called `build()`, which runs in the context of a Docker container with the chosen `image`.
-This function has access to all the metadata fields declared above.
-This function will only be run if the `image` field is defined and must be omitted otherwise.
-The working directory is already populated with all the sources declared in `sources`.
-It can be omitted for packages that do not require a build step.
-
-### Package Section
-
-The package section comprises a function called `package()`, which runs outside of the Docker container in an unspecified working directory.
-It has access to all the metadata fields, plus the `$srcdir` and `$pkgdir` variables.
+The `package()` function populates the `$pkgdir` directory with the files and directories that need to be installed using artifacts from the `$srcdir` directory.
+It runs outside of the Docker container in an unspecified working directory.
+It has access to all the metadata fields, the `$arch` and `$pkgname` variables, plus the `$srcdir` and `$pkgdir` paths.
 The `$pkgdir` directory is initially empty.
-The `$srcdir` directory is the working directory of the previous Docker container after running the build section.
-The `package()` function populates the `$pkgdir` directory with the files and directories that need to be installed using files from the `$srcdir` directory.
 
 ### Install Section
 
 The install section can contain additional functions to customize the behavior of the package when it is installed, removed, or upgraded on the device.
 Those functions are `preinstall()`, `configure()`, `preremove()`, `postremove()`, `preupgrade()` and `postupgrade()`.
 Unlike the previous functions, all the install functions **run in the context of the target device.**
-They have access to all the metadata fields and to custom functions whose name starts with `_`.
+They have access to all the metadata fields, to custom functions whose name starts with `_`, and to the `$arch` and `$pkgname` variables.
 They can also use functions from the [install library](../scripts/install-lib).
 
 When installing a new package, the following happens:
@@ -348,13 +385,3 @@ When upgrading a package from version A to B, the following happens:
 * `postupgrade B`, if it exists, is called from version A
 * New package files are unpacked and installed
 * `configure`, if it exists, is called from version B
-
-### Split Packages
-
-Split packages are sets of packages created from the build artifacts of a single recipe.
-To create a recipe for split packages, add the names of the additional packages to generate to the [`pkgnames`](#pkgnames) array.
-For each package, create a new function bearing the same name as the said package.
-Place [metadata fields](#metadata-section), a [package function](#package-section), and optionally [install functions](#install-section) specific to each package inside its associated function.
-Fields defined outside of any function at the top of the recipe will be shared with all generated packages.
-
-See [rmkit](../package/rmkit/package) for an example of a split package.
